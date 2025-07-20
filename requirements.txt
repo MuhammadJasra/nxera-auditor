@@ -6,3 +6,7 @@ Pillow
 pymupdf
 xhtml2pdf
 openai  
+scikit-learn
+joblib
+lightgbm
+

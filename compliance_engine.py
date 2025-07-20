@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Callable
 import pandas as pd
 import re
+import json
+import os
 
 @dataclass
 class Rule:
@@ -130,27 +132,62 @@ def build_catalogue() -> List[Rule]:
 
     return rules
 
+# Load compliance rules knowledge base
+RULES_JSON_PATH = os.path.join(os.path.dirname(__file__), 'compliance_rules.json')
+with open(RULES_JSON_PATH, 'r', encoding='utf-8') as f:
+    LAW_KB = {entry['id']: entry for entry in json.load(f)}
+
+def get_referenced_standards(jurisdiction=None):
+    """
+    Return all standards for a given jurisdiction (or all if None).
+    """
+    if jurisdiction:
+        return [v for v in LAW_KB.values() if jurisdiction.lower() in v['jurisdiction'].lower()]
+    return list(LAW_KB.values())
+
 
 def evaluate(df: pd.DataFrame) -> List[Dict[str, str]]:
     catalogue = build_catalogue()
     findings: List[Dict[str, str]] = []
+    referenced_standards = set()
     for rule in catalogue:
+        kb = LAW_KB.get(rule.id)
         try:
             if rule.check(df):
                 rows = rule.sample(df)
-                findings.append({
+                finding = {
                     "Rule": rule.id,
                     "Standard": rule.standard,
                     "Clause": rule.clause,
                     "Severity": rule.severity,
                     "Detail": f"{len(rows)} offending rows" if not rows.empty else "Breach detected"
-                })
+                }
+                if kb:
+                    finding.update({
+                        "LawStandard": kb.get("law_standard"),
+                        "Jurisdiction": kb.get("jurisdiction"),
+                        "LawDescription": kb.get("description"),
+                        "Applicability": kb.get("applicability")
+                    })
+                findings.append(finding)
         except Exception as e:
-            findings.append({
+            finding = {
                 "Rule": rule.id,
                 "Standard": rule.standard,
                 "Clause": rule.clause,
                 "Severity": rule.severity,
                 "Detail": f"[Engine Error] {str(e)}"
-            })
+            }
+            if kb:
+                finding.update({
+                    "LawStandard": kb.get("law_standard"),
+                    "Jurisdiction": kb.get("jurisdiction"),
+                    "LawDescription": kb.get("description"),
+                    "Applicability": kb.get("applicability")
+                })
+            findings.append(finding)
+        # Track referenced standards for reporting
+        if kb and not kb.get('automatable', True):
+            referenced_standards.add(rule.id)
+    # Optionally, return referenced standards for reporting
     return findings

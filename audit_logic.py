@@ -3,19 +3,32 @@ from __future__ import annotations
 import pandas as pd, subprocess
 from typing import List, Tuple, Dict
 from compliance_engine import evaluate as compliance_checks
+from fraud_model import score_transactions
+
+def add_fraud_scores(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["Fraud\u202fRisk\u202f%"] = score_transactions(df)
+    return df
 
 
 # ───── Normalise ───────────────────────────────────────────
 def normalise_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.lower().strip() for c in df.columns]
-    alias = {"transaction_date": "date", "trans_date": "date",
+    alias = {
+        "transaction_date": "date", "trans_date": "date",
              "details": "description", "desc": "description",
-             "value": "amount", "amt": "amount"}
-    df.rename(columns={k: v for k, v in alias.items() if k in df.columns},
-              inplace=True)
+        "value": "amount", "amt": "amount", "amount": "amount"
+    }
+    df.rename(columns={k: v for k, v in alias.items() if k in df.columns}, inplace=True)
+    # Remove duplicate columns, keep first
+    df = df.loc[:, ~df.columns.duplicated()]
     if not {"date", "description", "amount"}.issubset(df.columns):
-        return pd.DataFrame()
+        raise ValueError(f"Your data must have columns for date, description, and amount. Found: {df.columns.tolist()}")
+    # Ensure each column is a Series, not DataFrame
+    for col in ["date", "description", "amount"]:
+        if isinstance(df[col], pd.DataFrame):
+            df[col] = df[col].iloc[:, 0]
     df = pd.DataFrame(df[["date", "description", "amount"]])
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -113,13 +126,38 @@ def balance_sheet(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ───── Deep LLM Opinion (risks + actions) ────────────────
-def llm_opinion(summary:str, ratios:Dict[str,float], compliance:List[Dict[str,str]]) -> str:
-    comp = "; ".join(f"{c['Rule']}" for c in compliance) or "None"
+def llm_opinion(summary:str, ratios:Dict[str,float], compliance:List[Dict[str,str]], region:str="US (GAAP)") -> str:
+    # Add law/standard context to the compliance string
+    comp = "; ".join(f"{c['Rule']} ({c['LawStandard']})" if c.get('LawStandard') else f"{c['Rule']}" for c in compliance) or "None"
     prompt = ("You are a senior CPA. Based on this summary, ratios and compliance flags, "
               f"write an executive audit opinion with 3 risks and 3 actionable suggestions.\n"
-              f"SUMMARY: {summary}\n RATIOS: {ratios}\n COMPLIANCE: {comp}")
+              f"SUMMARY: {summary}\n RATIOS: {ratios}\n COMPLIANCE: {comp}\n"
+              f"REGION: {region}. Please ensure your opinion and suggestions are tailored to the selected region's standards and reference relevant laws/standards where appropriate.")
     try:
         res=subprocess.run(["ollama","run","mistral",prompt],capture_output=True,text=True,timeout=20)
         return res.stdout.strip()
     except Exception as e:
         return f"[LLM error] {e}"
+
+def get_advisory_messages(df: pd.DataFrame, region: str = "US (GAAP)") -> list:
+    """
+    Return a list of advisory messages based on accounting rules and internal control checks, region-aware.
+    """
+    messages = []
+    # Example: Revenue recognition policy
+    if (df["amount"] > 0).sum() > 0 and (df["amount"] < 0).sum() > 0:
+        if region == "Pakistan (FBR)":
+            messages.append("[FBR] Ensure revenue and expenses are matched as per FBR standards.")
+        elif region == "UK (IFRS)":
+            messages.append("[IFRS] Review your revenue recognition policy for compliance with IFRS 15.")
+        else:
+            messages.append("[GAAP] You may need to update your revenue recognition policy if revenue and expenses are not matched in the same period.")
+    # Example: Repeated weekend entries
+    if "date" in df.columns:
+        weekend_count = pd.to_datetime(df["date"]).dt.dayofweek.isin([5,6]).sum()
+        if weekend_count > 3:
+            messages.append("Repeated weekend entries suggest poor internal controls.")
+    # Add more region-specific rules as needed
+    if not messages:
+        messages.append("No major advisory issues detected.")
+    return messages
