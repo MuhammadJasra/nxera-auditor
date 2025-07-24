@@ -9,4 +9,16 @@ openai
 scikit-learn
 joblib
 lightgbm
+shap
+reportlab
+arabic-reshaper
+python-bidi
+pyhanko
+pyhanko-certvalidator
+cryptography
+asn1crypto
+oscrypto
+cffi
+pycparser
+tqdm
 
